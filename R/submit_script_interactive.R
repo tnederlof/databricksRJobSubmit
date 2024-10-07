@@ -2,62 +2,68 @@
 #'
 #' Transform an R script into a notebook task, installs R packages if needed,
 #' and submits as job to a Databricks cluster.
+#' @import shiny
+#' @import fs
+#' @import miniUI
+#' @import brickster
+#' @import rstudioapi
 #'
 #' @export
 submit_script_interactive <- function() {
-  ui <- miniPage(
-
-    includeHighlightJs(),
-    gadgetTitleBar("Submit R Script to Databricks"),
-    miniContentPanel(
-      h4("Replace the text 'from' with the text 'to'."),
-      hr(),
-      stableColumnLayout(
-        textInput("input_path", "Local R file path:"),
-        textInput("databricks_path", "Databricks Workspace folder:"),
-        textInput("cluster_id", "Databricks cluster id:")
-      ),
-      stableColumnLayout(
-        textInput("r_packages", "R packages to install (optional):"),
-        textInput("run_name", "Job run name (optional):"),
-        textInput("task_key", "Task key name (optional):"),
-        textInput("description", "Task description (optional:")
-      ),
-      actionButton("submit", "Submit Job"),
+  ui <- miniUI::miniPage(
+    miniUI::gadgetTitleBar("Submit R Script to Databricks"),
+    miniUI::miniContentPanel(
+      miniUI::miniContentPanel(
+        shiny::textInput("input_path", "Local R file path:"),
+        shiny::textInput("databricks_path", "Databricks Workspace folder:"),
+        shiny::textInput("cluster_id", "Databricks cluster id:"),
+        shiny::textInput("r_packages", "R packages to install (comma delimited, optional):"),
+        shiny::textInput("run_name", "Job run name (optional):"),
+        shiny::textInput("task_key", "Task key name (optional):"),
+        shiny::textInput("description", "Task description (optional:"),
+        shiny::actionButton("submit", "Submit Job")
+      )
     )
   )
 
   server <- function(input, output, session) {
 
-    observeEvent(submit$done, {
+    shiny::observeEvent(input$submit, {
 
-      if (r_packages == "") {
+      if (input$r_packages == "") {
         r_packages <- NULL
+      } else {
+        r_packages <- strsplit(gsub(" ", "", input$r_packages, fixed = TRUE), ",")[[1]]
       }
-      if (run_name == "") {
+      if (input$run_name == "") {
         run_name <- NULL
+      } else {
+        run_name <- input$run_name
       }
-      if (task_key == "") {
+      if (input$task_key == "") {
         task_key <- NULL
+      } else {
+        task_key <- input$task_key
       }
-      if (description == "") {
+      if (input$description == "") {
         description <- NULL
+      } else {
+        description <- input$description
       }
 
-      submit_script(input$input_path, input$databricks_path, input$cluster_id,
-                    r_packages, run_name, task_key, description)
+      result <- submit_script(input$input_path, input$databricks_path, input$cluster_id,
+                              r_packages, run_name, task_key, description)
 
-      stopApp()
+      shiny::stopApp()
     })
 
   }
 
-  viewer <- dialogViewer("Submit R Job to Databrick", width = 1000, height = 800)
-  runGadget(ui, server, viewer = viewer)
+  shiny::runGadget(ui, server, viewer = shiny::dialogViewer("Submit R Job to Databrick", width = 1000, height = 800))
 }
 
 
-submit_script <- function(input_path, databricks_path, cluster_id, r_packages = NULL, run_name = NULL, task_key = NULL, description = NULL, overwrite = F) {
+submit_script <- function(input_path, databricks_path, cluster_id, r_packages = NULL, run_name = NULL, task_key = NULL, description = NULL) {
   # check env variables
   if (Sys.getenv("DATABRICKS_HOST") == "") {
     stop("Env variable DATABRICKS_HOST not found. Ensure your session is started with Databricks credentials: https://docs.posit.co/ide/server-pro/user/posit-workbench/managed-credentials/databricks.html")
@@ -89,19 +95,18 @@ submit_script <- function(input_path, databricks_path, cluster_id, r_packages = 
   new_filename <- paste0(input_filename, "_databricks_notebook_", timestamp_chr, ".R")
   new_filename_no_ext <- paste0(input_filename, "_databricks_notebook_", timestamp_chr)
   temp_path <- do.call(fs::path, list(temp_dir_path, new_filename))
-  print(temp_path)
   suppressWarnings(convert_r_notebook(input_path, temp_path))
 
   databricks_full_path <- do.call(fs::path, list(databricks_path, new_filename))
 
   import_result <- tryCatch(
     {
-      return_code <- db_workspace_import(
+      return_code <- brickster::db_workspace_import(
         path = databricks_full_path,
         file = temp_path,
         format = "SOURCE",
         language = "R",
-        overwrite = overwrite,
+        overwrite = T,
         host = Sys.getenv("DATABRICKS_HOST"),
         token = token
       )
@@ -116,30 +121,35 @@ submit_script <- function(input_path, databricks_path, cluster_id, r_packages = 
   )
 
   if (is.null(task_key)) {
-    task_key <- new_filename_no_ext
+    task_key_used <- new_filename_no_ext
+  } else {
+    task_key_used <- task_key
   }
+  description_used <- description
 
-  notebook_task <- job_task(
-    task_key = task_key,
-    description = description,
+  notebook_task <- brickster::job_task(
+    task_key = task_key_used,
+    description = description_used,
     existing_cluster_id = cluster_id,
-    task = notebook_task(notebook_path = databricks_full_path)
+    task = brickster::notebook_task(notebook_path = databricks_full_path)
   )
 
   if (is.null(run_name)) {
-    run_name <- paste("Workbench Submitted Job", timestamp_chr)
+    run_name_used <- paste("Workbench Submitted Job", timestamp_chr)
+  } else {
+    run_name_used <- run_name
   }
 
   # install R packages on the cluster, script will block until they finish
   if (!is.null(r_packages)) {
-    install_r_packages(cluster_id, r_packages)
+    install_results <- install_r_packages(cluster_id, r_packages, token = token)
   }
 
   job_result <- tryCatch(
     {
-      job_submit_result <- db_jobs_runs_submit(
-        tasks = job_tasks(notebook_task),
-        run_name = run_name,
+      job_submit_result <- brickster::db_jobs_runs_submit(
+        tasks = brickster::job_tasks(notebook_task),
+        run_name = run_name_used,
         idempotency_token = timestamp_chr,
         token=token
       )
@@ -157,35 +167,16 @@ submit_script <- function(input_path, databricks_path, cluster_id, r_packages = 
 
 
 install_r_packages <- function(cluster_id, r_packages, repo_url = "https://packagemanager.posit.co/cran/__linux__/jammy/latest", token = token) {
-  install_result <- lapply(r_packages, function(x) install_r_package(x, repo_url, token))
-  return(wait_until_packages_done(cluster_id, r_packages, token = token))
+  lapply(r_packages, function(x) install_r_package(x, repo_url, cluster_id = cluster_id, token = token))
 }
 
 
 
-wait_until_packages_done <- function(cluster_id, r_packages, polling_interval = 1, token) {
-  lib_statuses <- "PENDING"
-  while (any(lib_statuses != "INSTALLED")) {
-    lib_query <- db_libs_cluster_status(cluster_id = cluster_id, token = token)
-    relevant_library_status <- purrr::keep(lib_query$library_statuses, \(x) x[[1]][[1]]$package %in% r_packages)
-    lib_statuses <- purrr::map_chr(relevant_library_status, "status")
-    lib_names <- purrr::map_chr(relevant_library_status, \(x) x[[1]][[1]]$package)
-
-    if ("FAILED" %in% lib_statuses) {
-      stop(paste("The following libraries failed to install:", paste(lib_names[lib_statuses == "FAILED"], collapse = ", ")))
-    }
-    Sys.sleep(polling_interval)
-  }
-  NULL
-}
-
-
-
-install_r_package <- function(package, repo_url, token) {
-  db_libs_install(
+install_r_package <- function(package, repo_url, cluster_id, token) {
+  brickster::db_libs_install(
     cluster_id = cluster_id,
-    libraries = libraries(
-      lib_cran(package = package, repo = repo_url)
+    libraries = brickster::libraries(
+      brickster::lib_cran(package = package, repo = repo_url)
     ),
     host = Sys.getenv("DATABRICKS_HOST"),
     token = token
