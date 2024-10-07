@@ -181,12 +181,6 @@ wait_until_packages_done <- function(cluster_id, r_packages, polling_interval = 
 
 
 
-if (all(lib_statuses == "INSTALLED")) {
-  return ()
-}
-
-
-
 install_r_package <- function(package, repo_url, token) {
   db_libs_install(
     cluster_id = cluster_id,
