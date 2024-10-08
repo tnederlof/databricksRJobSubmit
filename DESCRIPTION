@@ -13,6 +13,7 @@ Imports:
     shiny (>= 0.13),
     miniUI (>= 0.1.1),
     rstudioapi (>= 0.16.0),
+    cli (>= 3.6.3),
     brickster
 Remotes:
   databrickslabs/brickster
