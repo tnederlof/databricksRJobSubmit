@@ -12,7 +12,10 @@ Start a Databricks all-purpose compute cluster that support running R code.
 
 Ensure this cluster either has the appropriate R packages pre-installed or place package install commands at the start of each R script for installation at run time (follow the instructions below to speed up package installs).
 
+### Setup cluster for faster package installation
+
 Cluster setup instructions to speed up R package installs:
+
 1. Use [https://packagemanager.posit.co/client/#/repos/cran/setup?r_environment=other](https://packagemanager.posit.co/client/#/repos/cran/setup?r_environment=other) to get the relevant repository URL for your setup (be mindful that Ubuntu versions change between DBR versions). For example the URL for Ubuntu 22.04 is https://packagemanager.posit.co/cran/__linux__/jammy/latest.
 2. Create an environment variable at the cluster level named DATABRICKS_DEFAULT_R_REPOS, containing the repo URL found in step 1 as the value.
 3. Create an init script at the cluster level to set the HTTPUserAgent in Rprofile.site. For example:
