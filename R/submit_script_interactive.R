@@ -16,10 +16,10 @@ submit_script_interactive <- function() {
     miniUI::miniContentPanel(
       miniUI::miniContentPanel(
         shiny::textInput("input_path", "Local R file path:"),
-        shiny::textInput("databricks_path", "Databricks Workspace folder:"),
         shiny::textInput("cluster_id", "Databricks cluster id:"),
-        shiny::textInput("r_packages", "R packages to install (comma delimited, optional):"),
+        shiny::textInput("databricks_path", "Databricks Workspace folder (optional):"),
         shiny::textInput("run_name", "Job name (optional):"),
+        shiny::textInput("r_packages", "R packages to install (comma delimited, optional):"),
         shiny::actionButton("submit", "Submit Job")
       )
     )
@@ -40,7 +40,7 @@ submit_script_interactive <- function() {
         run_name <- input$run_name
       }
 
-      result <- submit_script(input$input_path, input$databricks_path, input$cluster_id,
+      result <- submit_script(input$input_path, input$cluster_id, input$databricks_path,
                               r_packages, run_name)
 
       # look up job details
@@ -59,7 +59,7 @@ submit_script_interactive <- function() {
 }
 
 
-submit_script <- function(input_path, databricks_path, cluster_id, r_packages = NULL, run_name = NULL) {
+submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_packages = NULL, run_name = NULL) {
   # check env variables
   if (Sys.getenv("DATABRICKS_HOST") == "") {
     stop("Env variable DATABRICKS_HOST not found. Ensure your session is started with Databricks credentials: https://docs.posit.co/ide/server-pro/user/posit-workbench/managed-credentials/databricks.html")
@@ -81,11 +81,16 @@ submit_script <- function(input_path, databricks_path, cluster_id, r_packages = 
   timestamp_chr <- as.character(as.numeric(as.POSIXct(Sys.time())) * 100000)
 
   # check databricks_path
-  db_path_split_vec <- fs::path_split(databricks_path)[[1]]
   current_user_info <- brickster::db_current_user(Sys.getenv("DATABRICKS_HOST"), token)
-  if ((db_path_split_vec[[2]] != "Workspace") | (db_path_split_vec[[3]] != "Users") | (db_path_split_vec[[4]] != current_user_info$userName)) {
-    stop(paste0("The Databricks workspace path must start with the format '/Workspace/Users/", current_user_info$userName, "/'"))
+  if (!is.null(databricks_path) & !(databricks_path == "")) {
+    db_path_split_vec <- fs::path_split(databricks_path)[[1]]
+    if ((db_path_split_vec[[2]] != "Workspace") | (db_path_split_vec[[3]] != "Users") | (db_path_split_vec[[4]] != current_user_info$userName)) {
+      stop(paste0("The Databricks workspace path must start with the format '/Workspace/Users/", current_user_info$userName, "/'"))
+    }
+  } else {
+    databricks_path <- do.call(fs::path, list("/Workspace", "Users", current_user_info$userName))
   }
+
 
   temp_dir_path <- fs::path_temp()
   new_filename <- paste0(input_filename, "_databricks_notebook_", timestamp_chr, ".R")
