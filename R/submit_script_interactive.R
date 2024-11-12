@@ -17,9 +17,6 @@ submit_script_interactive <- function() {
       miniUI::miniContentPanel(
         shiny::textInput("input_path", "Local R file path:"),
         shiny::textInput("cluster_id", "Databricks cluster id:"),
-        shiny::textInput("databricks_path", "Databricks Workspace folder (optional):"),
-        shiny::textInput("run_name", "Job name (optional):"),
-        shiny::textInput("r_packages", "R packages to install (comma delimited, optional):"),
         shiny::actionButton("submit", "Submit Job")
       )
     )
@@ -29,23 +26,10 @@ submit_script_interactive <- function() {
 
     shiny::observeEvent(input$submit, {
 
-      if (input$r_packages == "") {
-        r_packages <- NULL
-      } else {
-        r_packages <- strsplit(gsub(" ", "", input$r_packages, fixed = TRUE), ",")[[1]]
-      }
-      if (input$run_name == "") {
-        run_name <- NULL
-      } else {
-        run_name <- input$run_name
-      }
-
-      result <- submit_script(input$input_path, input$cluster_id, input$databricks_path,
-                              r_packages, run_name)
+      result <- submit_script(input$input_path, input$cluster_id)
 
       # look up job details
-      token <- workbench_databricks_token(Sys.getenv("DATABRICKS_HOST"), Sys.getenv("DATABRICKS_CONFIG_FILE"))
-      job_details <- db_jobs_runs_get(result$run_id, token = token)
+      job_details <- db_jobs_runs_get(result$run_id)
       job_url <- job_details$run_page_url
       cli::cli_text("Databricks job started. Visit: {.url {job_url}}.")
 
@@ -59,7 +43,7 @@ submit_script_interactive <- function() {
 }
 
 
-submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_packages = NULL, run_name = NULL) {
+submit_script <- function(input_path, cluster_id) {
   # check env variables
   if (Sys.getenv("DATABRICKS_HOST") == "") {
     stop("Env variable DATABRICKS_HOST not found. Ensure your session is started with Databricks credentials: https://docs.posit.co/ide/server-pro/user/posit-workbench/managed-credentials/databricks.html")
@@ -77,19 +61,11 @@ submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_pack
     stop("A problem occured with the input path, please ensure its a file ending in 'r' or 'R'")
   }
 
-  token <- workbench_databricks_token(Sys.getenv("DATABRICKS_HOST"), Sys.getenv("DATABRICKS_CONFIG_FILE"))
   timestamp_chr <- as.character(as.numeric(as.POSIXct(Sys.time())) * 100000)
+  current_user_info <- brickster::db_current_user()
 
   # check databricks_path
-  current_user_info <- brickster::db_current_user(Sys.getenv("DATABRICKS_HOST"), token)
-  if (!is.null(databricks_path) & !(databricks_path == "")) {
-    db_path_split_vec <- fs::path_split(databricks_path)[[1]]
-    if ((db_path_split_vec[[2]] != "Workspace") | (db_path_split_vec[[3]] != "Users") | (db_path_split_vec[[4]] != current_user_info$userName)) {
-      stop(paste0("The Databricks workspace path must start with the format '/Workspace/Users/", current_user_info$userName, "/'"))
-    }
-  } else {
-    databricks_path <- do.call(fs::path, list("/Workspace", "Users", current_user_info$userName))
-  }
+  databricks_path <- do.call(fs::path, list("/Workspace", "Users", current_user_info$userName))
 
 
   temp_dir_path <- fs::path_temp()
@@ -107,9 +83,7 @@ submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_pack
         file = temp_path,
         format = "SOURCE",
         language = "R",
-        overwrite = T,
-        host = Sys.getenv("DATABRICKS_HOST"),
-        token = token
+        overwrite = T
       )
       return_code
     },
@@ -121,11 +95,7 @@ submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_pack
     }
   )
 
-  if (is.null(run_name)) {
-    run_name_used <- paste("Workbench Submitted Job", timestamp_chr)
-  } else {
-    run_name_used <- run_name
-  }
+  run_name_used <- paste("Workbench Submitted Job", timestamp_chr)
 
   notebook_task <- brickster::job_task(
     task_key = timestamp_chr,
@@ -133,20 +103,12 @@ submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_pack
     task = brickster::notebook_task(notebook_path = databricks_full_path)
   )
 
-
-
-  # install R packages on the cluster, script will block until they finish
-  if (!is.null(r_packages)) {
-    install_results <- install_r_packages(cluster_id, r_packages, token = token)
-  }
-
   job_result <- tryCatch(
     {
       job_submit_result <- brickster::db_jobs_runs_submit(
         tasks = brickster::job_tasks(notebook_task),
         run_name = run_name_used,
-        idempotency_token = timestamp_chr,
-        token=token
+        idempotency_token = timestamp_chr
       )
       job_submit_result
     },
@@ -159,42 +121,6 @@ submit_script <- function(input_path, cluster_id, databricks_path = NULL, r_pack
   )
   job_result
 }
-
-
-install_r_packages <- function(cluster_id, r_packages, repo_url = "https://packagemanager.posit.co/cran/__linux__/jammy/latest", token = token) {
-  lapply(r_packages, function(x) install_r_package(x, repo_url, cluster_id = cluster_id, token = token))
-}
-
-
-
-install_r_package <- function(package, repo_url, cluster_id, token) {
-  brickster::db_libs_install(
-    cluster_id = cluster_id,
-    libraries = brickster::libraries(
-      brickster::lib_cran(package = package, repo = repo_url)
-    ),
-    host = Sys.getenv("DATABRICKS_HOST"),
-    token = token
-  )
-}
-
-workbench_databricks_token <- function(host, cfg_file) {
-  cfg <- readLines(cfg_file)
-  # We don't attempt a full parse of the INI syntax supported by Databricks
-  # config files, instead relying on the fact that this particular file will
-  # always contain only one section.
-  if (!any(grepl(host, cfg, fixed = TRUE))) {
-    # The configuration doesn't actually apply to this host.
-    return(NULL)
-  }
-  line <- grepl("token = ", cfg, fixed = TRUE)
-  token <- gsub("token = ", "", cfg[line])
-  if (nchar(token) == 0) {
-    return(NULL)
-  }
-  token
-}
-
 
 convert_r_notebook <- function(input_filename, output_filename) {
   code <- readLines(input_filename)
